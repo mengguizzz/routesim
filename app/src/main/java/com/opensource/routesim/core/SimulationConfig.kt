@@ -38,7 +38,7 @@ data class SimulationConfig(
     val maxSpeedKmh: Float,
     val minHoldSeconds: Float,
     val maxHoldSeconds: Float,
-    val loopRoute: Boolean,
+    val targetLaps: Int = 1,
     val sampleIntervalMs: Long = 1_000L,
 ) {
     init {
@@ -50,11 +50,12 @@ data class SimulationConfig(
         require(maxHoldSeconds >= minHoldSeconds) {
             "maxHoldSeconds must not be less than minHoldSeconds"
         }
+        require(targetLaps in 1..999) { "targetLaps must be between 1 and 999" }
         require(sampleIntervalMs in 250L..5_000L) { "sampleIntervalMs is outside the safe range" }
     }
 
     companion object {
-        fun defaults(mode: MotionMode, loopRoute: Boolean = true): SimulationConfig {
+        fun defaults(mode: MotionMode, targetLaps: Int = 1): SimulationConfig {
             val speed = mode.defaultSpeedKmh
             val hold = mode.defaultHoldSeconds
             return SimulationConfig(
@@ -63,7 +64,7 @@ data class SimulationConfig(
                 maxSpeedKmh = max(speed.endInclusive, speed.start + mode.speedStep),
                 minHoldSeconds = hold.start,
                 maxHoldSeconds = hold.endInclusive,
-                loopRoute = loopRoute,
+                targetLaps = targetLaps,
             )
         }
     }

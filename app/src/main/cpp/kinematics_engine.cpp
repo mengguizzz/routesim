@@ -61,7 +61,7 @@ public:
             double maxSpeedKmh,
             double minHoldSeconds,
             double maxHoldSeconds,
-            bool loopRoute) {
+            int targetLaps) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         route_.clear();
@@ -76,14 +76,12 @@ public:
         maxSpeedKmh_ = std::max(minSpeedKmh_, maxSpeedKmh);
         minHoldSeconds_ = std::max(1.0, minHoldSeconds);
         maxHoldSeconds_ = std::max(minHoldSeconds_, maxHoldSeconds);
-        loopRoute_ = loopRoute;
-
-        if (loopRoute_ && route_.size() >= 2 &&
-            haversineDistance(route_.front(), route_.back()) > 0.5) {
-            route_.push_back(route_.front());
-        }
+        targetLaps_ = std::clamp(targetLaps, 1, 999);
+        closedRoute_ = route_.size() >= 2 &&
+                haversineDistance(route_.front(), route_.back()) <= 0.5;
 
         currentSegmentIdx_ = 0;
+        direction_ = 1;
         currentPos_ = route_.empty() ? GeoPoint{0.0, 0.0} : route_.front();
         currentBearing_ = route_.size() >= 2 ? bearing(route_[0], route_[1]) : 0.0;
         currentSpeedKmh_ = 0.0;
@@ -136,8 +134,10 @@ private:
     GeoPoint currentPos_{0.0, 0.0};
 
     SimMode mode_ = SimMode::RUNNING;
-    bool loopRoute_ = true;
+    bool closedRoute_ = false;
     bool finished_ = true;
+    int direction_ = 1;
+    int targetLaps_ = 1;
 
     double minSpeedKmh_ = 6.0;
     double maxSpeedKmh_ = 14.0;
@@ -164,15 +164,21 @@ private:
             targetSpeedKmh_ = std::min(targetSpeedKmh_, curveSpeedLimitKmh());
         }
 
-        if (!loopRoute_) {
-            const double remaining = remainingRouteDistanceMeters();
+        {
+            const double remaining = remainingToTraversalEndMeters();
             const double deceleration = maxDecelerationMps2();
             const double speedMps = currentSpeedKmh_ / 3.6;
             const double brakingDistance = speedMps * speedMps / (2.0 * deceleration);
             if (remaining <= brakingDistance + 0.5) {
                 const double safeSpeedMps = std::sqrt(
                         std::max(0.0, 2.0 * deceleration * std::max(0.0, remaining - 0.02)));
-                targetSpeedKmh_ = std::min(targetSpeedKmh_, safeSpeedMps * 3.6);
+                const bool finalTraversal = lapCount_ + 1 >= targetLaps_;
+                const double minimumTurnSpeed = finalTraversal
+                        ? 0.0
+                        : minSpeedKmh_ * 0.35;
+                targetSpeedKmh_ = std::min(
+                        targetSpeedKmh_,
+                        std::max(minimumTurnSpeed, safeSpeedMps * 3.6));
             }
         }
     }
@@ -225,13 +231,17 @@ private:
             return;
         }
 
-        while (remainingMeters > 1e-6 && currentSegmentIdx_ + 1 < route_.size()) {
-            const GeoPoint& target = route_[currentSegmentIdx_ + 1];
+        while (remainingMeters > 1e-6) {
+            const int targetIndex = static_cast<int>(currentSegmentIdx_) + direction_;
+            if (targetIndex < 0 || targetIndex >= static_cast<int>(route_.size())) {
+                break;
+            }
+            const GeoPoint& target = route_[targetIndex];
             const double toTarget = haversineDistance(currentPos_, target);
 
             if (toTarget <= 1e-5) {
                 currentPos_ = target;
-                currentSegmentIdx_++;
+                currentSegmentIdx_ = static_cast<size_t>(targetIndex);
                 continue;
             }
 
@@ -240,18 +250,24 @@ private:
                 currentPos_ = target;
                 remainingMeters -= toTarget;
                 travelledMeters_ += toTarget;
-                currentSegmentIdx_++;
-                if (currentSegmentIdx_ >= route_.size() - 1) {
-                    if (loopRoute_) {
-                        lapCount_++;
-                        currentPos_ = route_.front();
-                        currentSegmentIdx_ = 0;
-                        currentBearing_ = bearing(route_[0], route_[1]);
-                    } else {
+                currentSegmentIdx_ = static_cast<size_t>(targetIndex);
+                const bool atBoundary =
+                        (direction_ > 0 && currentSegmentIdx_ == route_.size() - 1) ||
+                        (direction_ < 0 && currentSegmentIdx_ == 0);
+                if (atBoundary) {
+                    lapCount_++;
+                    if (lapCount_ >= targetLaps_) {
                         finished_ = true;
                         currentSpeedKmh_ = 0.0;
                         currentCadenceSpm_ = 0.0;
                         break;
+                    }
+                    if (closedRoute_) {
+                        currentPos_ = route_.front();
+                        currentSegmentIdx_ = 0;
+                        direction_ = 1;
+                    } else {
+                        direction_ = -direction_;
                     }
                 }
             } else {
@@ -264,30 +280,45 @@ private:
         }
     }
 
-    double remainingRouteDistanceMeters() const {
-        if (route_.size() < 2 || currentSegmentIdx_ + 1 >= route_.size()) {
+    double remainingToTraversalEndMeters() const {
+        if (route_.size() < 2) {
             return 0.0;
         }
-        double remaining = haversineDistance(currentPos_, route_[currentSegmentIdx_ + 1]);
-        for (size_t index = currentSegmentIdx_ + 1; index + 1 < route_.size(); ++index) {
-            remaining += haversineDistance(route_[index], route_[index + 1]);
+        const int firstTarget = static_cast<int>(currentSegmentIdx_) + direction_;
+        if (firstTarget < 0 || firstTarget >= static_cast<int>(route_.size())) {
+            return 0.0;
+        }
+        double remaining = haversineDistance(currentPos_, route_[firstTarget]);
+        int previous = firstTarget;
+        for (int index = firstTarget + direction_;
+             index >= 0 && index < static_cast<int>(route_.size());
+             index += direction_) {
+            remaining += haversineDistance(route_[previous], route_[index]);
+            previous = index;
         }
         return remaining;
     }
 
     double curveSpeedLimitKmh() const {
-        if (route_.size() < 3 || currentSegmentIdx_ + 1 >= route_.size()) {
+        const int firstTarget = static_cast<int>(currentSegmentIdx_) + direction_;
+        if (route_.size() < 3 ||
+            firstTarget < 0 ||
+            firstTarget >= static_cast<int>(route_.size())) {
             return maxSpeedKmh_;
         }
 
         const double lookAhead = mode_ == SimMode::DRIVING ? 75.0 : 30.0;
         double accumulated = 0.0;
-        GeoPoint lookAheadPoint = route_[currentSegmentIdx_ + 1];
-        for (size_t index = currentSegmentIdx_ + 1; index < route_.size(); ++index) {
+        GeoPoint lookAheadPoint = route_[firstTarget];
+        int previousIndex = static_cast<int>(currentSegmentIdx_);
+        for (int index = firstTarget;
+             index >= 0 && index < static_cast<int>(route_.size());
+             index += direction_) {
             accumulated += haversineDistance(
-                    index == currentSegmentIdx_ + 1 ? currentPos_ : route_[index - 1],
+                    index == firstTarget ? currentPos_ : route_[previousIndex],
                     route_[index]);
             lookAheadPoint = route_[index];
+            previousIndex = index;
             if (accumulated >= lookAhead) {
                 break;
             }
@@ -408,7 +439,7 @@ static void nativeInitRoute(
         jdouble maxSpeedKmh,
         jdouble minHoldSeconds,
         jdouble maxHoldSeconds,
-        jboolean loopRoute) {
+        jint targetLaps) {
     const jsize length = env->GetArrayLength(latLngFlatArray);
     jdouble* values = env->GetDoubleArrayElements(latLngFlatArray, nullptr);
 
@@ -426,7 +457,7 @@ static void nativeInitRoute(
             maxSpeedKmh,
             minHoldSeconds,
             maxHoldSeconds,
-            loopRoute == JNI_TRUE);
+            static_cast<int>(targetLaps));
 }
 
 static jdoubleArray nativeTick(JNIEnv* env, jobject, jdouble dtSeconds) {
@@ -451,7 +482,7 @@ static jdoubleArray nativeTick(JNIEnv* env, jobject, jdouble dtSeconds) {
 }
 
 static const JNINativeMethod methods[] = {
-        {"nativeInitRoute", "([DIDDDDZ)V", reinterpret_cast<void*>(nativeInitRoute)},
+        {"nativeInitRoute", "([DIDDDDI)V", reinterpret_cast<void*>(nativeInitRoute)},
         {"nativeTick", "(D)[D", reinterpret_cast<void*>(nativeTick)},
 };
 

@@ -102,7 +102,7 @@ class SimulationService : Service() {
                 EXTRA_MAX_HOLD,
                 selectedMode.defaultHoldSeconds.endInclusive,
             ),
-            loopRoute = intent.getBooleanExtra(EXTRA_LOOP, true),
+            targetLaps = intent.getIntExtra(EXTRA_TARGET_LAPS, 1),
         )
 
         val points = routeValues.toList().chunked(2).map { pair ->
@@ -123,7 +123,7 @@ class SimulationService : Service() {
             "route_points" to points.size,
             "speed_kmh" to "${selectedConfig.minSpeedKmh}..${selectedConfig.maxSpeedKmh}",
             "hold_sec" to "${selectedConfig.minHoldSeconds}..${selectedConfig.maxHoldSeconds}",
-            "loop" to selectedConfig.loopRoute,
+            "target_laps" to selectedConfig.targetLaps,
             "interval_ms" to selectedConfig.sampleIntervalMs,
         )
 
@@ -289,7 +289,7 @@ class SimulationService : Service() {
             .putExtra(STATE_FINISHED, finished)
             .putExtra(STATE_ERROR, error)
             .putExtra(STATE_MODE, mode.name)
-            .putExtra(STATE_LOOP, config?.loopRoute ?: true)
+            .putExtra(STATE_TARGET_LAPS, config?.targetLaps ?: 1)
         if (snapshot != null) {
             intent
                 .putExtra(STATE_LAT, snapshot.latitude)
@@ -422,14 +422,14 @@ class SimulationService : Service() {
         private const val EXTRA_MAX_SPEED = "max_speed"
         private const val EXTRA_MIN_HOLD = "min_hold"
         private const val EXTRA_MAX_HOLD = "max_hold"
-        private const val EXTRA_LOOP = "loop"
+        private const val EXTRA_TARGET_LAPS = "target_laps"
 
         const val STATE_STATUS = "status"
         const val STATE_PLAYING = "playing"
         const val STATE_FINISHED = "finished"
         const val STATE_ERROR = "error"
         const val STATE_MODE = "state_mode"
-        const val STATE_LOOP = "state_loop"
+        const val STATE_TARGET_LAPS = "state_target_laps"
         const val STATE_LAT = "lat"
         const val STATE_LNG = "lng"
         const val STATE_SPEED = "speed"
@@ -454,7 +454,7 @@ class SimulationService : Service() {
                 .putExtra(EXTRA_MAX_SPEED, config.maxSpeedKmh)
                 .putExtra(EXTRA_MIN_HOLD, config.minHoldSeconds)
                 .putExtra(EXTRA_MAX_HOLD, config.maxHoldSeconds)
-                .putExtra(EXTRA_LOOP, config.loopRoute)
+                .putExtra(EXTRA_TARGET_LAPS, config.targetLaps)
             ContextCompat.startForegroundService(context, intent)
         }
 

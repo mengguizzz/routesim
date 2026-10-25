@@ -2,6 +2,7 @@ package com.opensource.routesim.ui
 
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.os.SystemClock
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Overlay
@@ -34,6 +35,7 @@ class RouteDrawingOverlay(
     private var transformFocusY = 0f
     private var transformSpan = 1f
     private lateinit var tapDetector: GestureDetector
+    private var lastRouteRenderMillis = 0L
 
     override fun onTouchEvent(event: MotionEvent, mapView: MapView): Boolean {
         if (!drawingEnabled) {
@@ -111,7 +113,7 @@ class RouteDrawingOverlay(
         points.clear()
         strokes.clear()
         gesture = Gesture.NONE
-        onRouteChanged()
+        notifyRouteChanged(force = true)
     }
 
     fun undoLastStroke(): Boolean {
@@ -121,7 +123,7 @@ class RouteDrawingOverlay(
         if (endExclusive > start) {
             points.subList(start, endExclusive).clear()
         }
-        onRouteChanged()
+        notifyRouteChanged(force = true)
         return true
     }
 
@@ -142,7 +144,7 @@ class RouteDrawingOverlay(
         points += point
         lastTouchX = x
         lastTouchY = y
-        onRouteChanged()
+        notifyRouteChanged()
     }
 
     private fun finishStroke() {
@@ -151,7 +153,9 @@ class RouteDrawingOverlay(
             strokes += strokeStartIndex until points.size
         } else if (addedCount == 1) {
             points.removeAt(points.lastIndex)
-            onRouteChanged()
+            notifyRouteChanged(force = true)
+        } else {
+            notifyRouteChanged(force = true)
         }
         gesture = Gesture.NONE
     }
@@ -159,7 +163,7 @@ class RouteDrawingOverlay(
     private fun cancelStroke() {
         if (gesture == Gesture.DRAW && points.size > strokeStartIndex) {
             points.subList(strokeStartIndex, points.size).clear()
-            onRouteChanged()
+            notifyRouteChanged(force = true)
         }
         gesture = Gesture.NONE
     }
@@ -178,13 +182,23 @@ class RouteDrawingOverlay(
         val newSpan = distance(event).coerceAtLeast(1f)
         val scale = newSpan / transformSpan
         if (scale.isFinite() && scale > 0f) {
-            // Short pinches should move the map enough to feel responsive,
-            // while long gestures still follow the fingers predictably.
+            // MapController.zoomToFixing() animates and then rejects further
+            // updates while animating. Direct zoom keeps pinch tracking fluid.
+            val focusGeoPoint = mapView.projection.fromPixels(
+                focusX.toInt(),
+                focusY.toInt(),
+            )
             val zoom = (mapView.zoomLevelDouble + log2(scale) * 1.65).coerceIn(
                 mapView.minZoomLevel,
                 mapView.maxZoomLevel,
             )
-            mapView.controller.zoomToFixing(zoom, focusX.toInt(), focusY.toInt())
+            mapView.setZoomLevel(zoom)
+            val anchoredFocus = android.graphics.Point()
+            mapView.projection.toPixels(focusGeoPoint, anchoredFocus)
+            mapView.scrollBy(
+                anchoredFocus.x - focusX.toInt(),
+                anchoredFocus.y - focusY.toInt(),
+            )
         }
 
         val panGain = 1.35f
@@ -201,9 +215,21 @@ class RouteDrawingOverlay(
     private fun distance(event: MotionEvent): Float =
         hypot(event.getX(1) - event.getX(0), event.getY(1) - event.getY(0))
 
+    private fun notifyRouteChanged(force: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        if (force || now - lastRouteRenderMillis >= ROUTE_RENDER_INTERVAL_MS) {
+            lastRouteRenderMillis = now
+            onRouteChanged()
+        }
+    }
+
     private enum class Gesture {
         NONE,
         DRAW,
         TRANSFORM,
+    }
+
+    private companion object {
+        const val ROUTE_RENDER_INTERVAL_MS = 33L
     }
 }

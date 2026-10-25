@@ -47,7 +47,7 @@ class RouteMathTest {
             maxSpeedKmh = 9f,
             minHoldSeconds = 10f,
             maxHoldSeconds = 10f,
-            loopRoute = false,
+            targetLaps = 1,
         )
         assertEquals(9f, config.minSpeedKmh, 0f)
         assertEquals(9f, config.maxSpeedKmh, 0f)

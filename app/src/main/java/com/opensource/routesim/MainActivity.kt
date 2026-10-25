@@ -1,6 +1,7 @@
 package com.opensource.routesim
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -9,13 +10,19 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
+import android.os.Looper
+import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.graphics.ColorUtils
@@ -25,8 +32,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.children
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
+import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.RangeSlider
 import com.opensource.routesim.core.LatLng
 import com.opensource.routesim.core.MotionMode
@@ -37,6 +44,7 @@ import com.opensource.routesim.core.SimulationLogger
 import com.opensource.routesim.databinding.ActivityMainBinding
 import com.opensource.routesim.service.SimulationService
 import com.opensource.routesim.ui.AppTileSources
+import com.opensource.routesim.ui.PrivacyConsentDialog
 import com.opensource.routesim.ui.RouteDrawingOverlay
 import org.osmdroid.config.Configuration as OsmConfiguration
 import org.osmdroid.util.BoundingBox
@@ -70,8 +78,12 @@ class MainActivity : AppCompatActivity() {
     private var pendingStartAfterPermission = false
     private var currentPositionMarker: Marker? = null
     private var receiverRegistered = false
-    private var disclaimerShowing = false
+    private var privacyDialogShowing = false
+    private var accessGranted = false
+    private var controlPanelExpanded = true
     private var tileSourceId = AppTileSources.OSM_GERMANY
+    private var updatingTheme = false
+    private var initialBottomTab = R.id.navHome
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -87,7 +99,7 @@ class MainActivity : AppCompatActivity() {
                 ),
         )
         if (fineGranted) {
-            centerOnLastKnownLocationIfAvailable()
+            refreshCurrentLocation()
         } else {
             toast(getString(R.string.permission_required))
         }
@@ -108,6 +120,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        initialBottomTab = savedInstanceState?.getInt(STATE_BOTTOM_TAB, R.id.navHome)
+            ?: R.id.navHome
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
@@ -121,11 +135,15 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyWindowInsets()
+        alignWideLayouts()
 
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         initMap()
         restoreRoute(savedInstanceState)
         setupControls()
+        setupAboutPage()
+        setupBottomNavigation()
+        setupControlPanelCollapse()
         restoreUiPreferences()
         setupSystemBack()
         startRootCheck()
@@ -195,6 +213,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         outState.putString(STATE_MODE, currentMode.name)
+        outState.putInt(STATE_BOTTOM_TAB, binding.bottomNavGroup.checkedButtonId)
         super.onSaveInstanceState(outState)
     }
 
@@ -211,6 +230,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun alignWideLayouts() {
+        val maxContentWidth = (820 * resources.displayMetrics.density).toInt()
+        val sidePadding = ((resources.displayMetrics.widthPixels - maxContentWidth) / 2)
+            .coerceAtLeast((18 * resources.displayMetrics.density).toInt())
+        binding.aboutContent.aboutHeader.setPadding(sidePadding, 0, sidePadding, 0)
+        binding.aboutContent.aboutScroll.setPadding(sidePadding, 0, sidePadding, 0)
+    }
+
     private fun initMap() {
         mapView = binding.mapView
         tileSourceId = preferences.getString(PREF_TILE_SOURCE, AppTileSources.OSM_GERMANY)
@@ -221,16 +248,15 @@ class MainActivity : AppCompatActivity() {
         mapView.setTilesScaledToDpi(true)
         mapView.minZoomLevel = 4.0
         mapView.maxZoomLevel = 20.0
-        mapView.controller.setZoom(16.5)
-        val savedLat = preferences.getString(PREF_MAP_LAT, null)?.toDoubleOrNull()
-        val savedLng = preferences.getString(PREF_MAP_LNG, null)?.toDoubleOrNull()
-        mapView.controller.setCenter(
-            if (savedLat != null && savedLng != null) {
-                GeoPoint(savedLat, savedLng)
-            } else {
-                GeoPoint(39.9087, 116.3975)
-            },
-        )
+        val savedLat = preferences.getString(PREF_CURRENT_LAT, null)?.toDoubleOrNull()
+        val savedLng = preferences.getString(PREF_CURRENT_LNG, null)?.toDoubleOrNull()
+        if (savedLat != null && savedLng != null) {
+            mapView.controller.setCenter(GeoPoint(savedLat, savedLng))
+            mapView.controller.setZoom(16.5)
+        } else {
+            mapView.controller.setCenter(GeoPoint(35.0, 105.0))
+            mapView.controller.setZoom(4.0)
+        }
 
         routeCasing = Polyline().apply {
             outlinePaint.color = ColorUtils.setAlphaComponent(Color.WHITE, 235)
@@ -251,6 +277,9 @@ class MainActivity : AppCompatActivity() {
             renderRoute()
         }
         mapView.overlays.add(routeDrawingOverlay)
+        if (savedLat != null && savedLng != null) {
+            updatePositionMarker(savedLat, savedLng, 0f)
+        }
         renderRoute()
     }
 
@@ -304,17 +333,22 @@ class MainActivity : AppCompatActivity() {
         binding.btnFitRoute.setOnClickListener {
             fitRouteOnMap()
         }
+        binding.btnCurrentLocation.setOnClickListener {
+            if (isPlaying) {
+                toast("模拟运行中不刷新真实位置")
+            } else if (!hasFineLocationPermission()) {
+                requestInitialLocation()
+            } else {
+                binding.tvStatus.text = "正在获取当前位置…"
+                refreshCurrentLocation()
+            }
+        }
         binding.btnZoomIn.setOnClickListener {
             mapView.controller.zoomIn()
         }
         binding.btnZoomOut.setOnClickListener {
             mapView.controller.zoomOut()
         }
-        binding.btnAbout.setOnClickListener {
-            SimulationLogger.event("ui_about_opened")
-            startActivity(Intent(this, AboutActivity::class.java))
-        }
-
         binding.btnSettings.setOnClickListener {
             if (isPlaying) {
                 toast("运行中不能修改运动参数")
@@ -360,20 +394,182 @@ class MainActivity : AppCompatActivity() {
                 saveUiPreferences()
             }
         }
-        binding.switchLoop.setOnCheckedChangeListener { _, checked ->
+        binding.etTargetLaps.doAfterTextChanged {
             if (!updatingSliders) {
                 updateRunMeta()
                 saveUiPreferences()
-                SimulationLogger.event("ui_loop_changed", "loop" to checked)
+                SimulationLogger.event("ui_target_laps_changed", "laps" to targetLaps())
             }
         }
     }
+
+    private fun setupBottomNavigation() {
+        binding.bottomNavGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            updateBottomNavigationStyles()
+            when (checkedId) {
+                R.id.navAbout -> {
+                    showAboutScreen()
+                    SimulationLogger.event("bottom_nav_selected", "tab" to "about")
+                }
+
+                else -> {
+                    showHomeScreen()
+                    SimulationLogger.event("bottom_nav_selected", "tab" to "home")
+                }
+            }
+        }
+        binding.bottomNavGroup.check(initialBottomTab)
+        updateBottomNavigationStyles()
+    }
+
+    private fun updateBottomNavigationStyles() {
+        val selectedId = binding.bottomNavGroup.checkedButtonId.takeIf { it != View.NO_ID }
+            ?: R.id.navHome
+        binding.bottomNavGroup.children.filterIsInstance<MaterialButton>().forEach { button ->
+            val selected = button.id == selectedId
+            val selectedColor = ContextCompat.getColor(this, R.color.route_primary_dark)
+            val normalColor = ContextCompat.getColor(this, R.color.route_ink)
+            button.backgroundTintList = ColorStateList.valueOf(
+                ContextCompat.getColor(
+                    this,
+                    if (selected) R.color.route_primary_soft else R.color.route_surface_elevated,
+                ),
+            )
+            button.strokeColor = ColorStateList.valueOf(
+                ContextCompat.getColor(
+                    this,
+                    if (selected) R.color.route_primary else R.color.route_outline,
+                ),
+            )
+            button.setTextColor(if (selected) selectedColor else normalColor)
+            button.iconTint = ColorStateList.valueOf(if (selected) selectedColor else normalColor)
+        }
+    }
+
+    private fun setupAboutPage() {
+        binding.aboutContent.tvAboutVersion.text = getString(
+            R.string.version_format,
+            getVersionName(),
+        )
+        binding.aboutContent.btnGithub.setOnClickListener {
+            val repository = getString(R.string.github_repository_url)
+            SimulationLogger.event("about_open_repository", "url" to repository)
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(repository)))
+        }
+
+        updatingTheme = true
+        binding.aboutContent.themeGroup.check(
+            when (RoutesimApplication.loadThemeMode(this)) {
+                AppCompatDelegate.MODE_NIGHT_NO -> R.id.btnThemeLight
+                AppCompatDelegate.MODE_NIGHT_YES -> R.id.btnThemeDark
+                else -> R.id.btnThemeSystem
+            },
+        )
+        updatingTheme = false
+        updateThemeButtonStyles()
+        binding.aboutContent.themeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked || updatingTheme) return@addOnButtonCheckedListener
+            val mode = when (checkedId) {
+                R.id.btnThemeLight -> AppCompatDelegate.MODE_NIGHT_NO
+                R.id.btnThemeDark -> AppCompatDelegate.MODE_NIGHT_YES
+                else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+            }
+            SimulationLogger.event("theme_changed", "mode" to mode)
+            RoutesimApplication.setThemeMode(mode)
+        }
+    }
+
+    private fun setupControlPanelCollapse() {
+        controlPanelExpanded = preferences.getBoolean(PREF_CONTROL_PANEL_EXPANDED, true)
+        binding.btnToggleControl.setOnClickListener {
+            setControlPanelExpanded(!controlPanelExpanded, persist = true)
+        }
+        setControlPanelExpanded(controlPanelExpanded, persist = false)
+    }
+
+    private fun setControlPanelExpanded(expanded: Boolean, persist: Boolean) {
+        controlPanelExpanded = expanded
+        binding.controlPanelExpandable.isVisible = expanded
+        binding.btnToggleControl.rotation = if (expanded) 180f else 0f
+        binding.btnToggleControl.contentDescription = getString(
+            if (expanded) R.string.collapse_control_panel else R.string.expand_control_panel,
+        )
+        if (!expanded) {
+            toggleSettings(false)
+        }
+        if (persist) {
+            preferences.edit { putBoolean(PREF_CONTROL_PANEL_EXPANDED, expanded) }
+            SimulationLogger.event("control_panel_toggled", "expanded" to expanded)
+        }
+    }
+
+    private fun showHomeScreen() {
+        binding.aboutContent.root.isVisible = false
+        binding.mapView.isVisible = true
+        binding.topScrim.isVisible = true
+        binding.topPanel.isVisible = true
+        binding.mapTools.isVisible = true
+        binding.controlPanel.isVisible = true
+        binding.tvMapHint.isVisible = true
+        binding.tvAttribution.isVisible = true
+        setControlPanelExpanded(controlPanelExpanded, persist = false)
+    }
+
+    private fun showAboutScreen() {
+        toggleSettings(false)
+        binding.mapView.isVisible = false
+        binding.topScrim.isVisible = false
+        binding.topPanel.isVisible = false
+        binding.mapTools.isVisible = false
+        binding.controlPanel.isVisible = false
+        binding.tvMapHint.isVisible = false
+        binding.tvAttribution.isVisible = false
+        binding.aboutContent.root.isVisible = true
+        updateThemeButtonStyles()
+    }
+
+    private fun updateThemeButtonStyles() {
+        val selectedId = when (RoutesimApplication.loadThemeMode(this)) {
+            AppCompatDelegate.MODE_NIGHT_NO -> R.id.btnThemeLight
+            AppCompatDelegate.MODE_NIGHT_YES -> R.id.btnThemeDark
+            else -> R.id.btnThemeSystem
+        }
+        binding.aboutContent.themeGroup.children
+            .filterIsInstance<MaterialButton>()
+            .forEach { button ->
+                val selected = button.id == selectedId
+                button.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(
+                        this,
+                        if (selected) R.color.route_primary_soft else R.color.route_surface_elevated,
+                    ),
+                )
+                button.strokeColor = ColorStateList.valueOf(
+                    ContextCompat.getColor(
+                        this,
+                        if (selected) R.color.route_primary else R.color.route_outline,
+                    ),
+                )
+                button.setTextColor(
+                    ContextCompat.getColor(
+                        this,
+                        if (selected) R.color.route_primary_dark else R.color.route_ink,
+                    ),
+                )
+            }
+    }
+
+    private fun getVersionName(): String =
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "dev"
 
     private fun setupSystemBack() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (binding.settingsCard.isVisible) {
                     toggleSettings(false)
+                } else if (binding.bottomNavGroup.checkedButtonId == R.id.navAbout) {
+                    binding.bottomNavGroup.check(R.id.navHome)
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -383,19 +579,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRootCheck() {
+        rootReady = false
+        binding.gateOverlay.isVisible = true
+        binding.gateProgress.isVisible = true
+        binding.tvGateStatus.text = getString(R.string.root_gate_checking)
         binding.tvRootStatus.text = getString(R.string.root_checking)
         rootExecutor.execute {
             SimulationLogger.startSession("boot-${System.currentTimeMillis().toString().takeLast(6)}")
             val rooted = RootMockManager.checkRoot()
             val environmentReady = rooted && RootMockManager.prepareRootEnvironment(this)
+            if (environmentReady && !SimulationService.isRunning) {
+                RootMockManager.cleanupStaleProviders(locationManager)
+            }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 rootReady = environmentReady
-                binding.tvRootStatus.text = if (environmentReady) {
-                    getString(R.string.root_ready)
-                } else {
-                    "ROOT 未就绪"
-                }
+                binding.tvRootStatus.text =
+                    getString(if (environmentReady) R.string.root_ready else R.string.root_gate_failed)
                 binding.tvRootStatus.backgroundTintList = ColorStateList.valueOf(
                     ContextCompat.getColor(
                         this,
@@ -408,63 +608,84 @@ class MainActivity : AppCompatActivity() {
                         if (environmentReady) R.color.route_primary_dark else R.color.route_accent,
                     ),
                 )
-                setPlaybackUi(
-                    playing = isPlaying,
-                    status = if (environmentReady) {
-                        getString(R.string.route_hint)
-                    } else {
-                        "Root 授权未完成，定位模拟不可用"
-                    },
-                )
                 if (environmentReady) {
-                    showDisclaimerOnce()
-                    centerOnLastKnownLocationIfAvailable()
+                    binding.tvGateStatus.text = getString(R.string.root_gate_success)
+                    continueAfterRootVerification()
                 } else {
-                    showRootBlockedDialog()
+                    if (SimulationService.isRunning) {
+                        SimulationService.stop(this)
+                    }
+                    binding.gateProgress.isVisible = false
+                    binding.tvGateStatus.text = getString(R.string.root_gate_failed)
+                    binding.tvGateStatus.setTextColor(
+                        ContextCompat.getColor(this, R.color.route_accent),
+                    )
+                    binding.root.postDelayed({ finishAffinity() }, ROOT_FAILURE_EXIT_DELAY_MS)
                 }
             }
         }
     }
 
-    private fun showRootBlockedDialog() {
-        if (isFinishing || isDestroyed) return
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.root_required_title)
-            .setMessage(R.string.root_required_message)
-            .setCancelable(false)
-            .setPositiveButton(R.string.retry) { _, _ -> startRootCheck() }
-            .setNegativeButton(R.string.exit) { _, _ -> finishAffinity() }
-            .show()
+    private fun continueAfterRootVerification() {
+        if (preferences.getBoolean(PREF_PRIVACY_POLICY_ACCEPTED, false)) {
+            grantAccess()
+        } else {
+            showPrivacyConsentDialog()
+        }
     }
 
-    private fun showDisclaimerOnce() {
-        if (preferences.getBoolean(PREF_DISCLAIMER_ACCEPTED, false) ||
-            disclaimerShowing ||
+    private fun showPrivacyConsentDialog() {
+        if (privacyDialogShowing ||
             isFinishing ||
             isDestroyed
         ) {
             return
         }
-        disclaimerShowing = true
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.disclaimer_title)
-            .setMessage(R.string.disclaimer_message)
-            .setCancelable(false)
-            .setPositiveButton(R.string.disclaimer_accept) { _, _ ->
-                preferences.edit { putBoolean(PREF_DISCLAIMER_ACCEPTED, true) }
-                disclaimerShowing = false
-                SimulationLogger.event("disclaimer_accepted")
+        privacyDialogShowing = true
+        PrivacyConsentDialog(this) {
+            privacyDialogShowing = false
+            preferences.edit {
+                putBoolean(PREF_PRIVACY_POLICY_ACCEPTED, true)
             }
-            .setNegativeButton(R.string.disclaimer_exit) { _, _ ->
-                disclaimerShowing = false
-                finishAffinity()
+            grantAccess()
+        }.also { dialog ->
+            dialog.setOnDismissListener {
+                privacyDialogShowing = false
             }
-            .show()
+        }.show()
+    }
+
+    private fun grantAccess() {
+        if (accessGranted || isFinishing || isDestroyed) return
+        accessGranted = true
+        binding.gateOverlay.isVisible = false
+        showHomeScreen()
+        setPlaybackUi(
+            playing = SimulationService.isRunning,
+            status = if (SimulationService.isRunning) "模拟服务运行中" else getString(R.string.route_hint),
+        )
+        requestInitialLocation()
+        SimulationLogger.event("access_granted")
+    }
+
+    private fun requestInitialLocation() {
+        val requiredLocationPermissions = listOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+        val missing = requiredLocationPermissions.filterNot {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            refreshCurrentLocation()
+        } else {
+            permissionLauncher.launch(missing.toTypedArray())
+        }
     }
 
     private fun requestSimulationStart() {
         if (!rootReady) {
-            showRootBlockedDialog()
+            startRootCheck()
             return
         }
         if (routePoints.size < 2) {
@@ -491,7 +712,7 @@ class MainActivity : AppCompatActivity() {
             "ui_start_confirmed",
             "mode" to config.mode.name,
             "points" to route.size,
-            "loop" to config.loopRoute,
+            "target_laps" to config.targetLaps,
         )
         try {
             SimulationService.start(this, route, config)
@@ -568,7 +789,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnUndo.isEnabled = !playing
         binding.speedRangeSlider.isEnabled = !playing
         binding.holdRangeSlider.isEnabled = !playing
-        binding.switchLoop.isEnabled = !playing
+        binding.etTargetLaps.isEnabled = !playing
         if (playing) {
             toggleSettings(false)
         }
@@ -610,14 +831,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRunMeta() {
-        val loopText = if (binding.switchLoop.isChecked) "终点循环" else "终点停止"
+        val lapText = "目标 ${targetLaps()} 圈"
         val routeKm = RouteMath.polylineDistanceMeters(
             routePoints.map { LatLng(it.latitude, it.longitude) },
         ) / 1000.0
         binding.tvRunMeta.text = if (isPlaying) {
-            "$loopText · 路线 ${String.format(Locale.US, "%.2f", routeKm)} km · 1 秒定位"
+            "$lapText · 路线 ${String.format(Locale.US, "%.2f", routeKm)} km · 1 秒定位"
         } else {
-            "$loopText · ${speedText()} · 保持 ${holdText()}"
+            "$lapText · ${speedText()} · 保持 ${holdText()}"
         }
     }
 
@@ -684,6 +905,7 @@ class MainActivity : AppCompatActivity() {
             currentPositionMarker = it
             mapView.overlays.add(it)
         }
+        marker.title = if (isPlaying) "模拟位置" else "当前位置"
         marker.position = GeoPoint(latitude, longitude)
         marker.rotation = bearing
         mapView.invalidate()
@@ -699,23 +921,81 @@ class MainActivity : AppCompatActivity() {
         SimulationLogger.event("ui_fit_route", "points" to routePoints.size)
     }
 
-    private fun centerOnLastKnownLocationIfAvailable() {
-        if (!hasFineLocationPermission() || routePoints.isNotEmpty()) return
-        try {
-            val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (lastKnown != null) {
-                mapView.controller.setCenter(GeoPoint(lastKnown.latitude, lastKnown.longitude))
-                mapView.controller.setZoom(17.0)
-                SimulationLogger.event(
-                    "map_centered_on_last_known",
-                    "lat" to "%.6f".format(Locale.US, lastKnown.latitude),
-                    "lng" to "%.6f".format(Locale.US, lastKnown.longitude),
+    @SuppressLint("MissingPermission")
+    private fun refreshCurrentLocation() {
+        if (!hasFineLocationPermission() || isPlaying) return
+        val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            providers.forEach { provider ->
+                try {
+                    locationManager.getCurrentLocation(
+                        provider,
+                        null as CancellationSignal?,
+                        ContextCompat.getMainExecutor(this),
+                    ) { location ->
+                        if (location != null) applyCurrentLocation(location, "fresh_$provider")
+                    }
+                } catch (error: Exception) {
+                    SimulationLogger.warning(
+                        "current_location_request_failed",
+                        "provider" to provider,
+                        "message" to error.message,
+                    )
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            try {
+                locationManager.requestSingleUpdate(
+                    LocationManager.NETWORK_PROVIDER,
+                    object : LocationListener {
+                        override fun onLocationChanged(location: Location) {
+                            applyCurrentLocation(location, "single_update")
+                        }
+
+                        override fun onProviderDisabled(provider: String) = Unit
+                        override fun onProviderEnabled(provider: String) = Unit
+                        @Deprecated("Deprecated by Android")
+                        override fun onStatusChanged(
+                            provider: String?,
+                            status: Int,
+                            extras: Bundle?,
+                        ) = Unit
+                    },
+                    Looper.getMainLooper(),
+                )
+            } catch (error: Exception) {
+                SimulationLogger.warning(
+                    "current_location_request_failed",
+                    "provider" to LocationManager.NETWORK_PROVIDER,
+                    "message" to error.message,
                 )
             }
-        } catch (error: SecurityException) {
-            SimulationLogger.warning("last_known_location_denied", "message" to error.message)
         }
+    }
+
+    private fun applyCurrentLocation(location: Location, source: String) {
+        if (!accessGranted || isPlaying) return
+        mapView.controller.setCenter(GeoPoint(location.latitude, location.longitude))
+        mapView.controller.setZoom(17.0)
+        updatePositionMarker(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            bearing = if (location.hasBearing()) location.bearing else 0f,
+        )
+        binding.tvStatus.text = "已刷新到当前位置"
+        preferences.edit {
+            putString(PREF_CURRENT_LAT, location.latitude.toString())
+            putString(PREF_CURRENT_LNG, location.longitude.toString())
+        }
+        SimulationLogger.event(
+            "map_centered_on_current_location",
+            "source" to source,
+            "provider" to location.provider,
+            "lat" to "%.6f".format(Locale.US, location.latitude),
+            "lng" to "%.6f".format(Locale.US, location.longitude),
+            "accuracy_m" to location.accuracy,
+        )
     }
 
     private fun toggleSettings(show: Boolean) {
@@ -758,7 +1038,7 @@ class MainActivity : AppCompatActivity() {
                 stepSize = 1f
                 setValues(config.minHoldSeconds, config.maxHoldSeconds)
             }
-            binding.switchLoop.isChecked = config.loopRoute
+            binding.etTargetLaps.setText(config.targetLaps.toString())
             updateRangeLabels(binding.speedRangeSlider, binding.holdRangeSlider)
         } finally {
             updatingSliders = false
@@ -793,21 +1073,28 @@ class MainActivity : AppCompatActivity() {
             maxSpeedKmh = speedValues.last(),
             minHoldSeconds = holdValues.first(),
             maxHoldSeconds = holdValues.last(),
-            loopRoute = binding.switchLoop.isChecked,
+            targetLaps = targetLaps(),
         )
     }
 
     private fun savedConfig(mode: MotionMode): SimulationConfig {
         val defaults = SimulationConfig.defaults(
             mode,
-            preferences.getBoolean(PREF_LOOP, true),
+            preferences.getInt(PREF_TARGET_LAPS, 1),
         )
         val minSpeed = preferences.getFloat(key(mode, "speed_min"), defaults.minSpeedKmh)
         val maxSpeed = preferences.getFloat(key(mode, "speed_max"), defaults.maxSpeedKmh)
         val minHold = preferences.getFloat(key(mode, "hold_min"), defaults.minHoldSeconds)
         val maxHold = preferences.getFloat(key(mode, "hold_max"), defaults.maxHoldSeconds)
         return try {
-            SimulationConfig(mode, minSpeed, maxSpeed, minHold, maxHold, defaults.loopRoute)
+            SimulationConfig(
+                mode,
+                minSpeed,
+                maxSpeed,
+                minHold,
+                maxHold,
+                preferences.getInt(PREF_TARGET_LAPS, defaults.targetLaps),
+            )
         } catch (_: IllegalArgumentException) {
             defaults
         }
@@ -842,7 +1129,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveUiPreferences(config: SimulationConfig = currentConfig()) {
         preferences.edit {
             putString(PREF_MODE, currentMode.name)
-            putBoolean(PREF_LOOP, config.loopRoute)
+            putInt(PREF_TARGET_LAPS, config.targetLaps)
             putFloat(key(currentMode, "speed_min"), config.minSpeedKmh)
             putFloat(key(currentMode, "speed_max"), config.maxSpeedKmh)
             putFloat(key(currentMode, "hold_min"), config.minHoldSeconds)
@@ -952,16 +1239,22 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
+    private fun targetLaps(): Int =
+        binding.etTargetLaps.text?.toString()?.toIntOrNull()?.coerceIn(1, 999) ?: 1
+
     companion object {
         private const val PREFERENCES_NAME = "routesim_ui"
-        private const val PREF_DISCLAIMER_ACCEPTED = "disclaimer_accepted"
+        private const val PREF_PRIVACY_POLICY_ACCEPTED = "privacy_policy_v2_accepted"
+        private const val PREF_CONTROL_PANEL_EXPANDED = "control_panel_expanded"
         private const val PREF_MODE = "selected_mode"
-        private const val PREF_LOOP = "loop_route"
-        private const val PREF_MAP_LAT = "map_lat"
-        private const val PREF_MAP_LNG = "map_lng"
+        private const val PREF_TARGET_LAPS = "target_laps"
+        private const val PREF_CURRENT_LAT = "current_location_lat"
+        private const val PREF_CURRENT_LNG = "current_location_lng"
         private const val PREF_TILE_SOURCE = "tile_source"
         private const val STATE_ROUTE = "activity_route"
         private const val STATE_MODE = "activity_mode"
+        private const val STATE_BOTTOM_TAB = "activity_bottom_tab"
         private const val POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS"
+        private const val ROOT_FAILURE_EXIT_DELAY_MS = 1_800L
     }
 }

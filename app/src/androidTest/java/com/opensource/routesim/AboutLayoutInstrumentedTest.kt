@@ -23,7 +23,7 @@ class AboutLayoutInstrumentedTest {
         val themed = ContextThemeWrapper(application, R.style.Theme_Routesim)
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             val host = FrameLayout(themed)
-            val root = LayoutInflater.from(themed).inflate(R.layout.activity_about, host, false)
+            val root = LayoutInflater.from(themed).inflate(R.layout.content_about, host, false)
             host.addView(root)
             host.measure(
                 MeasureSpec.makeMeasureSpec(2_880, MeasureSpec.EXACTLY),
@@ -47,5 +47,29 @@ class AboutLayoutInstrumentedTest {
         val nightContext = application.createConfigurationContext(configuration)
         assertEquals(0xFF101A18.toInt(), nightContext.getColor(R.color.route_surface))
         assertEquals(0xFFEDF8F4.toInt(), nightContext.getColor(R.color.route_ink))
+    }
+
+    @Test
+    fun privacyConsentLayoutMeasuresAndStartsDisabled() {
+        val application = ApplicationProvider.getApplicationContext<Context>()
+        val themed = ContextThemeWrapper(application, R.style.Theme_Routesim)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val host = FrameLayout(themed)
+            val root = LayoutInflater.from(themed).inflate(
+                R.layout.dialog_privacy_consent,
+                host,
+                false,
+            )
+            host.addView(root)
+            host.measure(
+                MeasureSpec.makeMeasureSpec(1_200, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(1_200, MeasureSpec.EXACTLY),
+            )
+            host.layout(0, 0, 1_200, 1_200)
+
+            assertTrue(root.findViewById<View>(R.id.privacyScroll).measuredHeight > 0)
+            assertTrue(root.findViewById<View>(R.id.etPrivacyConfirm).measuredHeight > 0)
+            assertEquals(false, root.findViewById<View>(R.id.btnPrivacyAgree).isEnabled)
+        }
     }
 }

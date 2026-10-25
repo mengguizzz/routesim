@@ -17,6 +17,15 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class MainLayoutInstrumentedTest {
     @Test
+    fun privacyAcceptanceCanBeSeededForUiTests() {
+        val application = ApplicationProvider.getApplicationContext<Context>()
+        application.getSharedPreferences("routesim_ui", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("privacy_policy_v2_accepted", true)
+            .commit()
+    }
+
+    @Test
     fun settingsPanelMeasuredWithAllControlsVisible() {
         val application = ApplicationProvider.getApplicationContext<Context>()
         val themed = ContextThemeWrapper(application, R.style.Theme_Routesim)
@@ -37,7 +46,7 @@ class MainLayoutInstrumentedTest {
             assertTrue(settings.measuredHeight > 0)
             assertTrue(root.findViewById<View>(R.id.speedRangeSlider).measuredHeight > 0)
             assertTrue(root.findViewById<View>(R.id.holdRangeSlider).measuredHeight > 0)
-            assertTrue(root.findViewById<View>(R.id.switchLoop).measuredHeight > 0)
+            assertTrue(root.findViewById<View>(R.id.etTargetLaps).measuredHeight > 0)
         }
     }
 }

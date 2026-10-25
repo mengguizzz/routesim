@@ -18,7 +18,7 @@ object NativeKinematics {
         maxSpeedKmh: Double,
         minHoldSeconds: Double,
         maxHoldSeconds: Double,
-        loopRoute: Boolean,
+        targetLaps: Int,
     )
 
     external fun nativeTick(dtSeconds: Double): DoubleArray
@@ -37,7 +37,7 @@ object NativeKinematics {
             config.maxSpeedKmh.toDouble(),
             config.minHoldSeconds.toDouble(),
             config.maxHoldSeconds.toDouble(),
-            config.loopRoute,
+            config.targetLaps,
         )
         SimulationLogger.event(
             "native_route_initialized",
@@ -45,7 +45,7 @@ object NativeKinematics {
             "points" to points.size,
             "speed_kmh" to "${config.minSpeedKmh}..${config.maxSpeedKmh}",
             "hold_sec" to "${config.minHoldSeconds}..${config.maxHoldSeconds}",
-            "loop" to config.loopRoute,
+            "target_laps" to config.targetLaps,
         )
     }
 

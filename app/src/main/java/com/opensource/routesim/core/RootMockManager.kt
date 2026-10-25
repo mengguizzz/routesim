@@ -195,6 +195,34 @@ object RootMockManager {
         }
     }
 
+    /**
+     * Some vendor builds keep a mock provider override after the owning
+     * process is force-stopped or replaced by an APK update. A normal app start
+     * clears those stale overrides before asking for a real current location.
+     */
+    @Synchronized
+    fun cleanupStaleProviders(locationManager: LocationManager) {
+        val providers = listOf(
+            LocationManager.GPS_PROVIDER,
+            LocationManager.NETWORK_PROVIDER,
+        )
+        providers.forEach { provider ->
+            try {
+                locationManager.removeTestProvider(provider)
+                SimulationLogger.event("stale_provider_override_removed", "provider" to provider)
+            } catch (_: IllegalArgumentException) {
+                // No mock override is present; leave the vendor provider alone.
+            } catch (error: Exception) {
+                SimulationLogger.warning(
+                    "stale_provider_cleanup_failed",
+                    "provider" to provider,
+                    "message" to error.message,
+                )
+            }
+        }
+        createdProviders.clear()
+    }
+
     @SuppressLint("WrongConstant")
     private fun addProvider(
         locationManager: LocationManager,

@@ -17,21 +17,9 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnAboutBack"
-            style="@style/Widget.Routesim.MapToolButton"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:contentDescription="@string/back"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            app:icon="@drawable/ic_arrow_back"
-            app:iconSize="20dp" />
-
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
             android:layout_weight="1"
             android:fontFamily="sans-serif-medium"
             android:text="@string/about_title"
@@ -48,6 +36,7 @@
     </LinearLayout>
 
     <androidx.core.widget.NestedScrollView
+        android:id="@+id/aboutScroll"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:clipToPadding="false"

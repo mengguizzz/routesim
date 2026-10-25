@@ -73,6 +73,53 @@ class RouteDrawingOverlayInstrumentedTest {
         }
     }
 
+    @Test
+    fun twoFingerPinchZoomsIn() {
+        val application = ApplicationProvider.getApplicationContext<Context>()
+        val themed = ContextThemeWrapper(application, R.style.Theme_Routesim)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            Configuration.getInstance().load(
+                themed,
+                themed.getSharedPreferences("osmdroid_pinch_test", Context.MODE_PRIVATE),
+            )
+            val map = MapView(themed).apply {
+                setTileSource(TileSourceFactory.MAPNIK)
+                setUseDataConnection(false)
+                setMultiTouchControls(false)
+                controller.setCenter(GeoPoint(31.75, 117.16))
+                controller.setZoom(15.0)
+                layout(0, 0, 1_200, 800)
+            }
+            val points = mutableListOf<GeoPoint>()
+            map.overlays.add(RouteDrawingOverlay(points) {})
+            val zoomBefore = map.zoomLevelDouble
+
+            val down = event(MotionEvent.ACTION_DOWN, floatArrayOf(500f), floatArrayOf(400f), 0L)
+            map.dispatchTouchEvent(down)
+            down.recycle()
+            val pointerDown = event(
+                MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                floatArrayOf(500f, 700f),
+                floatArrayOf(400f, 400f),
+                20L,
+            )
+            map.dispatchTouchEvent(pointerDown)
+            pointerDown.recycle()
+            val move = event(
+                MotionEvent.ACTION_MOVE,
+                floatArrayOf(300f, 900f),
+                floatArrayOf(400f, 400f),
+                40L,
+            )
+            map.dispatchTouchEvent(move)
+            move.recycle()
+
+            assertTrue(points.isEmpty())
+            assertTrue(map.zoomLevelDouble > zoomBefore + 0.5)
+            map.onDetach()
+        }
+    }
+
     private fun event(
         action: Int,
         xs: FloatArray,

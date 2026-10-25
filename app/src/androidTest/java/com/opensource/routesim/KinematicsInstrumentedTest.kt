@@ -22,7 +22,7 @@ class KinematicsInstrumentedTest {
                 maxSpeedKmh = 15f,
                 minHoldSeconds = 2f,
                 maxHoldSeconds = 5f,
-                loopRoute = true,
+                targetLaps = 1,
             ),
         )
 
@@ -55,7 +55,7 @@ class KinematicsInstrumentedTest {
                     maxSpeedKmh = speedRange.endInclusive,
                     minHoldSeconds = 3f,
                     maxHoldSeconds = 6f,
-                    loopRoute = true,
+                    targetLaps = 1,
                 ),
             )
             repeat(30) {
@@ -67,7 +67,7 @@ class KinematicsInstrumentedTest {
     }
 
     @Test
-    fun loopingRouteNeverFinishesAndAdvancesLaps() {
+    fun multipleTraversalsCountEachOneWayPass() {
         NativeKinematics.initialize(
             points = listOf(
                 LatLng(31.0, 121.0),
@@ -80,7 +80,7 @@ class KinematicsInstrumentedTest {
                 maxSpeedKmh = 20f,
                 minHoldSeconds = 2f,
                 maxHoldSeconds = 4f,
-                loopRoute = true,
+                targetLaps = 3,
             ),
         )
 
@@ -88,8 +88,8 @@ class KinematicsInstrumentedTest {
         repeat(60) {
             snapshot = NativeKinematics.tick(1.0)
         }
-        assertFalse(snapshot.finished)
-        assertTrue(snapshot.lapCount >= 1)
+        assertTrue(snapshot.finished)
+        assertTrue(snapshot.lapCount == 3)
     }
 
     @Test
@@ -105,7 +105,7 @@ class KinematicsInstrumentedTest {
                 maxSpeedKmh = 7f,
                 minHoldSeconds = 2f,
                 maxHoldSeconds = 4f,
-                loopRoute = false,
+                targetLaps = 1,
             ),
         )
 
