@@ -111,8 +111,15 @@ adb logcat -s RouteSim:V
 
 ## 开源前建议
 
-- 明确选择 OSI 认可的开源许可证并添加 `LICENSE`。
 - 保留免责声明，不添加绕过第三方服务风控的功能。
 - 明确发布渠道。Root 与模拟定位类应用通常不适合直接提交 Google Play。
 - 为不同 ROM、Android 版本和目标定位 API（LocationManager、FusedLocationProvider）
   建立真实设备测试矩阵。
+
+## 许可证
+
+Copyright (C) 2026 mengguizzz and Routesim contributors.
+
+本项目采用 [GNU General Public License v3.0 only](LICENSE)（`GPL-3.0-only`）。
+你可以按照许可证条款使用、修改和分发本项目；分发修改版时必须提供对应源代码，
+并保留相同的自由软件许可条件。

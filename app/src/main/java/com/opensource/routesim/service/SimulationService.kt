@@ -172,7 +172,7 @@ class SimulationService : Service() {
                     speedMps = snapshot.speedMps,
                     bearingDegrees = snapshot.bearingDegrees,
                     accuracyMeters = snapshot.accuracyMeters,
-                    moving = !snapshot.finished,
+                    isMoving = !snapshot.finished,
                 )
 
                 SimulationLogger.event(

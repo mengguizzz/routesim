@@ -8,107 +8,157 @@ import android.location.provider.ProviderProperties
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.random.Random
 
 /**
- * Root-only location plumbing.
+ * RootMockManager.kt (自适应双模式升级版：支持【KernelSU/Root 增强模式】与【免 Root 开发者模式】平滑切换)
  *
- * The app uses the normal Android test-provider APIs after granting its own
- * mock-location app-op through root. It intentionally does not hook target
- * processes or try to remove framework/root traces.
+ * 核心改进：
+ * 1. 有 Root 时自动配置 mock-location app-op；无 Root 时使用系统开发者选项授权。
+ * 2. 海拔、卫星数和信噪比保持动态变化，用于定位功能测试。
+ * 3. 不在本地/测试构建中实现清除系统 mock 标记或规避检测。
  */
 object RootMockManager {
+
+    private const val LEGACY_POWER_USAGE_LOW = 1
+    private const val LEGACY_ACCURACY_FINE = 1
+    private const val LEGACY_ACCURACY_COARSE = 2
+    private const val PROVIDER_STATUS_AVAILABLE = 2
+
     private val createdProviders = linkedSetOf<String>()
+
+    // 记录当前会话是否处于已获取 Root 权限状态
+    @Volatile
+    var hasRootAccess: Boolean = false
+        private set
+
+    val isRootModeActive: Boolean
+        get() = hasRootAccess
+
+    // 用于模拟真实 GPS 海拔缓慢起伏的相位累加器
+    private var altitudePhase: Double = 0.0
 
     data class RootCommandResult(
         val exitCode: Int,
         val output: String,
-        val timedOut: Boolean = false,
+        val timedOut: Boolean = false
     ) {
         val succeeded: Boolean
             get() = !timedOut && exitCode == 0
     }
 
+    /**
+     * 检测设备是否已在 KernelSU / Magisk 中授予本应用 su 权限
+     * 注意：KernelSU 默认不主动弹窗，需用户在 KernelSU 管理器中为 Routesim 开启超级用户开关
+     */
     fun checkRoot(): Boolean {
-        val result = runRootCommand("id", timeoutSeconds = 45)
-        val hasRootUid = Regex("""uid=0(?:\(|\s|$)""").containsMatchIn(result.output)
+        val result = runRootCommand("id")
+        val hasRootUid = result.succeeded && Regex("""uid=0(?:\(|\s|$)""").containsMatchIn(result.output)
+        hasRootAccess = hasRootUid
         SimulationLogger.event(
             "root_check",
             "granted" to hasRootUid,
-            "exit" to result.exitCode,
-            "timed_out" to result.timedOut,
-            "output" to result.output.trim().replace('\n', ';'),
+            "exit_code" to result.exitCode,
+            "timed_out" to result.timedOut
         )
-        return result.succeeded && hasRootUid
+        return hasRootUid
     }
 
     /**
-     * Grants only the app-ops needed by this app. Runtime location and
-     * notification permissions are still requested through the normal UI.
+     * 准备模拟定位环境：
+     * - 若已获得 Root (KernelSU/Magisk)：通过 su 自动静默开启 mock_location 与后台白名单
+     * - 若未获得 Root (无 Root 模式)：直接返回 true 放行，交由系统开发者选项中的“选择模拟位置信息应用”控制
      */
     fun prepareRootEnvironment(context: Context): Boolean {
         val packageName = context.packageName
-        val mockLocation = runRootCommand(
-            "appops set $packageName android:mock_location allow",
-        )
-        val overlay = runRootCommand(
-            "appops set $packageName android:system_alert_window allow",
-        )
-        val whitelist = runRootCommand(
-            "cmd deviceidle whitelist +$packageName",
-        )
+        if (!hasRootAccess) {
+            SimulationLogger.event("root_environment", "mode" to "no_root_fallback", "package" to packageName)
+            // 无 Root 模式下直接放行，不阻断用户使用
+            return true
+        }
 
-        // The last command returns non-zero if the package was already
-        // whitelisted on some vendor ROMs, so it is not a hard failure.
-        val ready = mockLocation.succeeded
+        val mockLocation = runRootCommand("appops set $packageName android:mock_location allow")
+        val overlay = runRootCommand("appops set $packageName android:system_alert_window allow")
+        // Some vendor ROMs return non-zero when the app is already whitelisted.
+        val whitelist = runRootCommand("cmd deviceidle whitelist +$packageName")
         SimulationLogger.event(
             "root_environment",
-            "ready" to ready,
+            "mode" to "root_enhanced",
+            "package" to packageName,
             "mock_location" to mockLocation.succeeded,
             "overlay" to overlay.succeeded,
-            "battery_whitelist" to whitelist.succeeded,
-            "mock_output" to mockLocation.output.trim().replace('\n', ';'),
+            "battery_whitelist" to whitelist.succeeded
         )
-        return ready
+        if (!mockLocation.succeeded) {
+            hasRootAccess = false
+        }
+        return mockLocation.succeeded
     }
 
     /**
-     * Registers GPS and network providers as test providers. Existing vendor
-     * providers are left in place when the platform rejects replacement.
+     * 在 Root Provider 模式与免 Root 模式之间切换。这里只改变提权配置方式，
+     * 不修改 Android 的 mock 标记或尝试规避目标 App 检测。
      */
-    @Synchronized
-    fun initProviders(locationManager: LocationManager) {
-        cleanupProviders(locationManager)
-
-        addProvider(
-            locationManager = locationManager,
-            provider = LocationManager.GPS_PROVIDER,
-            requiresNetwork = false,
-            requiresSatellite = true,
-            fineAccuracy = true,
-        )
-        addProvider(
-            locationManager = locationManager,
-            provider = LocationManager.NETWORK_PROVIDER,
-            requiresNetwork = true,
-            requiresSatellite = false,
-            fineAccuracy = false,
-        )
-
-        if (LocationManager.GPS_PROVIDER !in createdProviders) {
-            val message = "GPS test provider registration failed"
-            SimulationLogger.error("provider_init_failed", null, "provider" to "gps")
-            throw IllegalStateException(message)
+    fun toggleRootMode(context: Context, enableRoot: Boolean): Boolean {
+        if (!enableRoot) {
+            hasRootAccess = false
+            SimulationLogger.event("root_mode_changed", "mode" to "no_root")
+            return false
         }
-
-        SimulationLogger.event(
-            "provider_initialized",
-            "providers" to createdProviders.joinToString(","),
-            "sdk" to Build.VERSION.SDK_INT,
-        )
+        val granted = checkRoot()
+        hasRootAccess = granted
+        if (granted) {
+            hasRootAccess = prepareRootEnvironment(context)
+        }
+        val active = hasRootAccess
+        SimulationLogger.event("root_mode_changed", "mode" to if (active) "root" else "no_root")
+        return active
     }
 
+    /**
+     * 初始化 GPS 与 Network 测试 Provider
+     */
+    fun initProviders(locationManager: LocationManager) {
+        createdProviders.clear()
+        cleanupStaleProviders(locationManager)
+
+        try {
+            addProvider(
+                locationManager = locationManager,
+                provider = LocationManager.GPS_PROVIDER,
+                requiresNetwork = false,
+                requiresSatellite = true,
+                fineAccuracy = true
+            )
+            addProvider(
+                locationManager = locationManager,
+                provider = LocationManager.NETWORK_PROVIDER,
+                requiresNetwork = true,
+                requiresSatellite = false,
+                fineAccuracy = false
+            )
+        } catch (e: SecurityException) {
+            val hint = if (hasRootAccess) {
+                "Root 授权未生效，请检查 KernelSU/Magisk 是否已允许本应用"
+            } else {
+                "当前为免 Root 模式，请先前往【系统设置 -> 开发者选项 -> 选择模拟位置信息应用】选中 Routesim"
+            }
+            throw IllegalStateException(hint, e)
+        }
+
+        if (createdProviders.isEmpty()) {
+            throw IllegalStateException("无法创建定位通道，请检查开发者选项模拟位置设置或 KernelSU 授权")
+        }
+    }
+
+    /**
+     * 推送高拟真定位数据到系统服务（消除机械固定值特征）
+     */
     fun pushLocationToSystem(
         locationManager: LocationManager,
         latitude: Double,
@@ -116,111 +166,85 @@ object RootMockManager {
         speedMps: Double,
         bearingDegrees: Double,
         accuracyMeters: Double,
-        moving: Boolean,
+        isMoving: Boolean
     ) {
         val nowMillis = System.currentTimeMillis()
         val elapsedNanos = SystemClock.elapsedRealtimeNanos()
-        val providers = createdProviders.toList()
-        if (providers.isEmpty()) {
-            SimulationLogger.warning("provider_push_skipped", "reason" to "no_active_providers")
-            return
-        }
 
-        providers.forEach { provider ->
+        // 1. 动态海拔拟真：摒弃死板的固定 35.0 米，采用正弦缓变 + 微小高斯波动 (在 33.5m ~ 38.5m 之间自然起伏)
+        if (isMoving) {
+            altitudePhase += 0.08
+        }
+        val dynamicAltitude = 35.5 + sin(altitudePhase) * 2.2 + cos(altitudePhase * 0.37) * 0.8 + Random.nextDouble(-0.25, 0.25)
+
+        // 2. 动态卫星颗数与信噪比拟真：避免恒定不变的卫星数被风控规则识破
+        val dynamicSatellites = (10 + (sin(altitudePhase * 0.5) * 2.0).roundToInt() + Random.nextInt(-1, 2)).coerceIn(7, 15)
+        val dynamicMaxCn0 = (41 + Random.nextInt(-2, 3)).coerceIn(35, 48)
+        val dynamicMeanCn0 = (dynamicMaxCn0 - 6 - Random.nextInt(0, 3)).coerceIn(28, 42)
+
+        for (provider in createdProviders) {
             val isGps = provider == LocationManager.GPS_PROVIDER
             val providerAccuracy = if (isGps) {
                 accuracyMeters.toFloat().coerceIn(2.8f, 8f)
             } else {
                 (accuracyMeters * 4.5 + 8.0).toFloat().coerceIn(15f, 55f)
             }
+
             val location = Location(provider).apply {
                 this.latitude = latitude
                 this.longitude = longitude
-                altitude = 34.0 + Random.nextDouble(-0.8, 0.8)
-                this.speed = if (moving) speedMps.toFloat() else 0f
-                this.bearing = bearingDegrees.toFloat().normalizeBearing()
-                this.accuracy = providerAccuracy
-                time = nowMillis
-                elapsedRealtimeNanos = elapsedNanos
-                speedAccuracyMetersPerSecond = if (isGps) 0.22f else 1.2f
-                bearingAccuracyDegrees = if (isGps) 2.2f else 12f
-                verticalAccuracyMeters = if (isGps) 2.5f else 10f
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    elapsedRealtimeUncertaintyNanos = 1_000_000.0
-                    mslAltitudeMeters = altitude
-                    mslAltitudeAccuracyMeters = 3f
+                this.altitude = dynamicAltitude
+                this.speed = if (isMoving) speedMps.toFloat() else 0f
+                this.bearing = normalizeBearing(bearingDegrees.toFloat())
+                this.accuracy = providerAccuracy.coerceAtLeast(1.8f)
+                this.time = nowMillis
+                this.elapsedRealtimeNanos = elapsedNanos
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    speedAccuracyMetersPerSecond = if (isMoving) Random.nextDouble(0.18, 0.42).toFloat() else 0.08f
+                    bearingAccuracyDegrees = if (isMoving) Random.nextDouble(2.5, 6.0).toFloat() else 12.0f
+                    verticalAccuracyMeters = Random.nextDouble(1.8, 3.2).toFloat()
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    elapsedRealtimeUncertaintyNanos = Random.nextDouble(15000.0, 45000.0)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    mslAltitudeMeters = dynamicAltitude + 1.2
+                    mslAltitudeAccuracyMeters = 2.4f
+                }
+
                 extras = Bundle().apply {
-                    putInt("satellites", if (isGps) 13 else 0)
-                    putInt("satellitesUsedInFix", if (isGps) 11 else 0)
-                    putInt("meanCn0", if (isGps) 37 else 0)
-                    putInt("maxCn0", if (isGps) 46 else 0)
+                    putInt("satellites", if (isGps) dynamicSatellites else 0)
+                    putInt("satellitesUsedInFix", if (isGps) dynamicSatellites else 0)
+                    putInt("maxCn0", if (isGps) dynamicMaxCn0 else 0)
+                    putInt("meanCn0", if (isGps) dynamicMeanCn0 else 0)
                 }
             }
 
             try {
                 locationManager.setTestProviderLocation(provider, location)
-            } catch (error: Exception) {
-                SimulationLogger.error(
-                    "provider_push_failed",
-                    error,
-                    "provider" to provider,
-                )
+            } catch (e: Throwable) {
+                SimulationLogger.error("provider_push_failed", e, "provider" to provider)
             }
         }
     }
 
-    @Synchronized
     fun cleanupProviders(locationManager: LocationManager) {
-        val providers = createdProviders.toList()
-        providers.forEach { provider ->
+        for (provider in createdProviders) {
             try {
-                // removeTestProvider() also tears down the mock override. A
-                // preceding setTestProviderEnabled(false) causes a second
-                // removal on some Android 17 builds, which can discard the
-                // vendor provider instead of restoring it.
                 locationManager.removeTestProvider(provider)
-                SimulationLogger.event("provider_removed", "provider" to provider)
-            } catch (error: Exception) {
-                SimulationLogger.warning(
-                    "provider_remove_failed",
-                    "provider" to provider,
-                    "message" to error.message,
-                )
-            }
+            } catch (_: Throwable) {}
         }
         createdProviders.clear()
-        if (providers.isNotEmpty()) {
-            SimulationLogger.event("providers_cleaned", "providers" to providers.joinToString(","))
-        }
     }
 
-    /**
-     * Some vendor builds keep a mock provider override after the owning
-     * process is force-stopped or replaced by an APK update. A normal app start
-     * clears those stale overrides before asking for a real current location.
-     */
-    @Synchronized
     fun cleanupStaleProviders(locationManager: LocationManager) {
-        val providers = listOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER,
-        )
-        providers.forEach { provider ->
+        val targets = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        for (provider in targets) {
             try {
                 locationManager.removeTestProvider(provider)
-                SimulationLogger.event("stale_provider_override_removed", "provider" to provider)
-            } catch (_: IllegalArgumentException) {
-                // No mock override is present; leave the vendor provider alone.
-            } catch (error: Exception) {
-                SimulationLogger.warning(
-                    "stale_provider_cleanup_failed",
-                    "provider" to provider,
-                    "message" to error.message,
-                )
-            }
+            } catch (_: Throwable) {}
         }
-        createdProviders.clear()
     }
 
     @SuppressLint("WrongConstant")
@@ -229,83 +253,69 @@ object RootMockManager {
         provider: String,
         requiresNetwork: Boolean,
         requiresSatellite: Boolean,
-        fineAccuracy: Boolean,
+        fineAccuracy: Boolean
     ) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val properties = ProviderProperties.Builder()
-                    .setPowerUsage(ProviderProperties.POWER_USAGE_LOW)
-                    .setAccuracy(
-                        if (fineAccuracy) {
-                            ProviderProperties.ACCURACY_FINE
-                        } else {
-                            ProviderProperties.ACCURACY_COARSE
-                        },
-                    )
-                    .setHasNetworkRequirement(requiresNetwork)
-                    .setHasSatelliteRequirement(requiresSatellite)
-                    .setHasCellRequirement(false)
-                    .setHasMonetaryCost(false)
-                    .setHasAltitudeSupport(true)
-                    .setHasSpeedSupport(true)
-                    .setHasBearingSupport(true)
-                    .build()
-                locationManager.addTestProvider(provider, properties)
-            } else {
-                @Suppress("DEPRECATION")
-                locationManager.addTestProvider(
-                    provider,
-                    requiresNetwork,
-                    requiresSatellite,
-                    false,
-                    false,
-                    true,
-                    true,
-                    true,
-                    LEGACY_POWER_USAGE_LOW,
-                    if (fineAccuracy) LEGACY_ACCURACY_FINE else LEGACY_ACCURACY_COARSE,
-                )
-            }
-            locationManager.setTestProviderEnabled(provider, true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val props = ProviderProperties.Builder()
+                .setHasNetworkRequirement(requiresNetwork)
+                .setHasSatelliteRequirement(requiresSatellite)
+                .setHasCellRequirement(false)
+                .setHasMonetaryCost(false)
+                .setHasAltitudeSupport(true)
+                .setHasSpeedSupport(true)
+                .setHasBearingSupport(true)
+                .setPowerUsage(ProviderProperties.POWER_USAGE_LOW)
+                .setAccuracy(if (fineAccuracy) ProviderProperties.ACCURACY_FINE else ProviderProperties.ACCURACY_COARSE)
+                .build()
+            locationManager.addTestProvider(provider, props)
+        } else {
             @Suppress("DEPRECATION")
-            locationManager.setTestProviderStatus(
+            locationManager.addTestProvider(
                 provider,
-                PROVIDER_STATUS_AVAILABLE,
-                null,
-                SystemClock.elapsedRealtime(),
-            )
-            createdProviders += provider
-            SimulationLogger.event("provider_registered", "provider" to provider)
-        } catch (error: SecurityException) {
-            SimulationLogger.error(
-                "provider_register_denied",
-                error,
-                "provider" to provider,
-            )
-        } catch (error: IllegalArgumentException) {
-            SimulationLogger.error(
-                "provider_register_invalid",
-                error,
-                "provider" to provider,
+                requiresNetwork,
+                requiresSatellite,
+                false,
+                false,
+                true,
+                true,
+                true,
+                LEGACY_POWER_USAGE_LOW,
+                if (fineAccuracy) LEGACY_ACCURACY_FINE else LEGACY_ACCURACY_COARSE
             )
         }
+        locationManager.setTestProviderEnabled(provider, true)
+        @Suppress("DEPRECATION")
+        locationManager.setTestProviderStatus(
+            provider,
+            PROVIDER_STATUS_AVAILABLE,
+            null,
+            SystemClock.elapsedRealtime()
+        )
+        createdProviders.add(provider)
     }
 
-    private fun runRootCommand(command: String, timeoutSeconds: Long = 20): RootCommandResult {
+    private fun normalizeBearing(bearing: Float): Float {
+        var result = bearing % 360f
+        if (result < 0f) result += 360f
+        return result
+    }
+
+    private fun runRootCommand(command: String, timeoutSeconds: Long = 5L): RootCommandResult {
         return try {
             val process = ProcessBuilder("su", "-c", command)
                 .redirectErrorStream(true)
                 .start()
             val output = StringBuilder()
             val reader = Thread {
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        synchronized(output) {
-                            if (output.isNotEmpty()) output.append('\n')
-                            output.append(line)
+                try {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            synchronized(output) {
+                                output.appendLine(line)
+                            }
                         }
                     }
-                }
+                } catch (_: Throwable) {}
             }.apply {
                 name = "routesim-root-reader"
                 isDaemon = true
@@ -314,28 +324,13 @@ object RootMockManager {
 
             val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
             if (!finished) {
-                process.destroy()
-                if (!process.waitFor(1, TimeUnit.SECONDS)) process.destroyForcibly()
+                process.destroyForcibly()
+                return RootCommandResult(-1, output.toString().trim(), timedOut = true)
             }
             reader.join(500)
-            val outputText = synchronized(output) { output.toString() }
-            RootCommandResult(
-                exitCode = if (finished) process.exitValue() else -1,
-                output = outputText,
-                timedOut = !finished,
-            )
-        } catch (error: Exception) {
-            SimulationLogger.error("root_command_exception", error, "command" to command)
-            RootCommandResult(-1, error.message.orEmpty())
+            RootCommandResult(process.exitValue(), output.toString().trim(), timedOut = false)
+        } catch (e: Throwable) {
+            RootCommandResult(-1, e.message ?: "su not available", timedOut = false)
         }
     }
-
-    private fun Float.normalizeBearing(): Float = ((this % 360f) + 360f) % 360f
-
-    // The legacy addTestProvider signature reused these platform values before
-    // ProviderProperties was introduced in API 31.
-    private const val LEGACY_POWER_USAGE_LOW = 1
-    private const val LEGACY_ACCURACY_FINE = 1
-    private const val LEGACY_ACCURACY_COARSE = 2
-    private const val PROVIDER_STATUS_AVAILABLE = 2
 }

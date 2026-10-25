@@ -297,17 +297,17 @@
                         android:textColor="@color/route_muted"
                         android:textSize="13sp" />
 
-                    <TextView
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnLicense"
+                        style="@style/Widget.Routesim.ModeButton"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
+                        android:layout_height="42dp"
                         android:layout_marginTop="12dp"
-                        android:background="@drawable/bg_root_badge"
-                        android:fontFamily="sans-serif-medium"
                         android:paddingHorizontal="10dp"
                         android:paddingVertical="6dp"
-                        android:text="@string/license_pending"
+                        android:text="@string/license_gpl3"
                         android:textColor="@color/route_primary_dark"
-                        android:textSize="11sp" />
+                        android:textSize="12sp" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

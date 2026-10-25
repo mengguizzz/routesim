@@ -63,8 +63,9 @@
     <string name="theme_light">浅色</string>
     <string name="theme_dark">深色</string>
     <string name="open_source_title">开源与许可</string>
-    <string name="open_source_body">源码公开，方便审计 Root 操作、定位注入和数据处理逻辑。当前尚未选择正式开源许可证，发布前应在仓库中添加 LICENSE。</string>
-    <string name="license_pending">LICENSE 待选择</string>
+    <string name="open_source_body">源码公开，便于审计 Root 操作、定位注入和数据处理逻辑。本项目采用 GNU General Public License v3.0 only；分发修改版时须继续提供对应源代码。</string>
+    <string name="license_gpl3">查看 GPL-3.0-only 许可证</string>
+    <string name="github_license_url" translatable="false">https://github.com/mengguizzz/routesim/blob/main/LICENSE</string>
     <string name="about_footer">Routesim · 仅供授权测试与开发调试</string>
     <string name="version_format">版本 %1$s</string>
     <string name="back">返回</string>

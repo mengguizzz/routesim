@@ -303,6 +303,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
+	// 点击顶部状态胶囊：动态开启/重测 KernelSU Root 或切回免 Root 模式
+binding.tvRootStatus.setOnClickListener {
+    if (isPlaying) {
+        toast("请先停止模拟，再切换 Root 模式")
+        return@setOnClickListener
+    }
+    val wantEnable = !RootMockManager.isRootModeActive
+    binding.tvRootStatus.text = getString(R.string.root_checking)
+    rootExecutor.execute {
+        val active = RootMockManager.toggleRootMode(this, wantEnable)
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            updateRootStatusBadge(active)
+            if (active) {
+                toast("已开启 Root 模式（自动配置定位 Provider）")
+            } else if (wantEnable) {
+                toast("未检测到 Root 授权，请先在 KernelSU 中开启本应用超级用户权限后再点此按钮")
+            } else {
+                toast("已切换为免 Root 模式（需在系统开发者选项中选择模拟位置应用）")
+            }
+        }
+    }
+}
         binding.btnStartStop.setOnClickListener {
             if (isPlaying) {
                 SimulationLogger.event("ui_stop_requested")
@@ -457,6 +480,11 @@ class MainActivity : AppCompatActivity() {
             SimulationLogger.event("about_open_repository", "url" to repository)
             startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(repository)))
         }
+        binding.aboutContent.btnLicense.setOnClickListener {
+            val licenseUrl = getString(R.string.github_license_url)
+            SimulationLogger.event("about_open_license", "url" to licenseUrl)
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(licenseUrl)))
+        }
 
         updatingTheme = true
         binding.aboutContent.themeGroup.check(
@@ -578,53 +606,53 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun startRootCheck() {
-        rootReady = false
-        binding.gateOverlay.isVisible = true
-        binding.gateProgress.isVisible = true
-        binding.tvGateStatus.text = getString(R.string.root_gate_checking)
-        binding.tvRootStatus.text = getString(R.string.root_checking)
-        rootExecutor.execute {
-            SimulationLogger.startSession("boot-${System.currentTimeMillis().toString().takeLast(6)}")
-            val rooted = RootMockManager.checkRoot()
-            val environmentReady = rooted && RootMockManager.prepareRootEnvironment(this)
-            if (environmentReady && !SimulationService.isRunning) {
-                RootMockManager.cleanupStaleProviders(locationManager)
+private fun startRootCheck() {
+    rootReady = false
+    binding.gateOverlay.isVisible = true
+    binding.gateProgress.isVisible = true
+    binding.tvGateStatus.text = getString(R.string.root_gate_checking)
+    binding.tvRootStatus.text = getString(R.string.root_checking)
+    rootExecutor.execute {
+        SimulationLogger.startSession("boot-${System.currentTimeMillis().toString().takeLast(6)}")
+        val rooted = RootMockManager.checkRoot()
+        RootMockManager.prepareRootEnvironment(this)
+        if (rooted && !SimulationService.isRunning) {
+            RootMockManager.cleanupStaleProviders(locationManager)
+        }
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            // 无论有无 Root 均将环境标记为就绪，允许进入地图
+            rootReady = true
+            updateRootStatusBadge(RootMockManager.isRootModeActive)
+            binding.tvGateStatus.text = if (rooted) {
+                getString(R.string.root_gate_success)
+            } else {
+                "未检测到 Root，已进入免 Root 模式"
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                rootReady = environmentReady
-                binding.tvRootStatus.text =
-                    getString(if (environmentReady) R.string.root_ready else R.string.root_gate_failed)
-                binding.tvRootStatus.backgroundTintList = ColorStateList.valueOf(
-                    ContextCompat.getColor(
-                        this,
-                        if (environmentReady) R.color.route_primary_soft else R.color.route_accent_soft,
-                    ),
-                )
-                binding.tvRootStatus.setTextColor(
-                    ContextCompat.getColor(
-                        this,
-                        if (environmentReady) R.color.route_primary_dark else R.color.route_accent,
-                    ),
-                )
-                if (environmentReady) {
-                    binding.tvGateStatus.text = getString(R.string.root_gate_success)
-                    continueAfterRootVerification()
-                } else {
-                    if (SimulationService.isRunning) {
-                        SimulationService.stop(this)
-                    }
-                    binding.gateProgress.isVisible = false
-                    binding.tvGateStatus.text = getString(R.string.root_gate_failed)
-                    binding.tvGateStatus.setTextColor(
-                        ContextCompat.getColor(this, R.color.route_accent),
-                    )
-                    binding.root.postDelayed({ finishAffinity() }, ROOT_FAILURE_EXIT_DELAY_MS)
-                }
-            }
+            continueAfterRootVerification()
         }
     }
+}
+
+private fun updateRootStatusBadge(rootActive: Boolean) {
+    binding.tvRootStatus.text = if (rootActive) {
+        "ROOT模式"
+    } else {
+        "免ROOT模式"
+    }
+    binding.tvRootStatus.backgroundTintList = ColorStateList.valueOf(
+        ContextCompat.getColor(
+            this,
+            if (rootActive) R.color.route_primary_soft else R.color.route_accent_soft
+        )
+    )
+    binding.tvRootStatus.setTextColor(
+        ContextCompat.getColor(
+            this,
+            if (rootActive) R.color.route_primary_dark else R.color.route_accent
+        )
+    )
+}
 
     private fun continueAfterRootVerification() {
         if (preferences.getBoolean(PREF_PRIVACY_POLICY_ACCEPTED, false)) {
