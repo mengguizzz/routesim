@@ -1,0 +1,20 @@
+<resources>
+    <style name="Theme.Routesim" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/route_primary</item>
+        <item name="colorPrimaryVariant">@color/route_primary_dark</item>
+        <item name="colorOnPrimary">@color/route_surface</item>
+        <item name="colorSecondary">@color/route_accent</item>
+        <item name="colorSecondaryVariant">@color/route_accent</item>
+        <item name="colorOnSecondary">@color/route_surface</item>
+        <item name="colorSurface">@color/route_surface</item>
+        <item name="colorOnSurface">@color/route_ink</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@color/route_surface</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.Routesim.AlertDialog</item>
+    </style>
+</resources>

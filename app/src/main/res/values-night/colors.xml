@@ -1,0 +1,15 @@
+<resources>
+    <color name="route_primary">#58D7BA</color>
+    <color name="route_primary_dark">#91EBD8</color>
+    <color name="route_primary_soft">#173E35</color>
+    <color name="route_accent">#FF927D</color>
+    <color name="route_accent_soft">#44251F</color>
+    <color name="route_ink">#EDF8F4</color>
+    <color name="route_muted">#A0B6AF</color>
+    <color name="route_surface">#101A18</color>
+    <color name="route_surface_elevated">#F217231F</color>
+    <color name="route_outline">#31443F</color>
+    <color name="route_map_tool">#F21A2623</color>
+    <color name="route_dark_panel">#E60A1311</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

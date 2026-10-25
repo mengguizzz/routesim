@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="route_primary">#0D7C66</color>
+    <color name="route_primary_dark">#075C4C</color>
+    <color name="route_primary_soft">#DDF4EC</color>
+    <color name="route_accent">#FF674D</color>
+    <color name="route_accent_soft">#FFF0EC</color>
+    <color name="route_ink">#11211E</color>
+    <color name="route_muted">#64736F</color>
+    <color name="route_surface">#F9FCFB</color>
+    <color name="route_surface_elevated">#F7FFFFFF</color>
+    <color name="route_outline">#DCE7E3</color>
+    <color name="route_map_tool">#F5FFFFFF</color>
+    <color name="route_dark_panel">#D9192B27</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
