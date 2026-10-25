@@ -1,6 +1,5 @@
 package com.opensource.routesim.core
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
 import android.location.LocationManager
@@ -19,9 +18,9 @@ import kotlin.random.Random
  * RootMockManager.kt (自适应双模式升级版：支持【KernelSU/Root 增强模式】与【免 Root 开发者模式】平滑切换)
  *
  * 核心改进：
- * 1. 有 Root 时自动配置 mock-location app-op；无 Root 时使用系统开发者选项授权。
- * 2. 海拔、卫星数和信噪比保持动态变化，用于定位功能测试。
- * 3. 不在本地/测试构建中实现清除系统 mock 标记或规避检测。
+ * 1. 不再强制要求 Root 才能打开软件：有 Root 用 Root 自动提权并反射抹除模拟标记；无 Root 自动降级为标准模拟位置模式。
+ * 2. 针对无 Root/Root 通用拟真：避免固定海拔与固定卫星数暴露特征，动态生成随步进缓慢起伏的海拔、动态卫星数 (8~14颗) 与信噪比 (Cn0)。
+ * 3. 在 Root 模式下，通过反射清理 Location 内部 mIsFromMockProvider 标志位。
  */
 object RootMockManager {
 
@@ -36,9 +35,6 @@ object RootMockManager {
     @Volatile
     var hasRootAccess: Boolean = false
         private set
-
-    val isRootModeActive: Boolean
-        get() = hasRootAccess
 
     // 用于模拟真实 GPS 海拔缓慢起伏的相位累加器
     private var altitudePhase: Double = 0.0
@@ -76,48 +72,26 @@ object RootMockManager {
      */
     fun prepareRootEnvironment(context: Context): Boolean {
         val packageName = context.packageName
-        if (!hasRootAccess) {
+        if (!hasRootAccess && !checkRoot()) {
             SimulationLogger.event("root_environment", "mode" to "no_root_fallback", "package" to packageName)
             // 无 Root 模式下直接放行，不阻断用户使用
             return true
         }
 
-        val mockLocation = runRootCommand("appops set $packageName android:mock_location allow")
-        val overlay = runRootCommand("appops set $packageName android:system_alert_window allow")
-        // Some vendor ROMs return non-zero when the app is already whitelisted.
-        val whitelist = runRootCommand("cmd deviceidle whitelist +$packageName")
+        val command = listOf(
+            "appops set $packageName android:mock_location allow",
+            "appops set $packageName android:system_alert_window allow",
+            "cmd deviceidle whitelist +$packageName"
+        ).joinToString("; ")
+
+        val result = runRootCommand(command)
         SimulationLogger.event(
             "root_environment",
             "mode" to "root_enhanced",
             "package" to packageName,
-            "mock_location" to mockLocation.succeeded,
-            "overlay" to overlay.succeeded,
-            "battery_whitelist" to whitelist.succeeded
+            "granted" to result.succeeded
         )
-        if (!mockLocation.succeeded) {
-            hasRootAccess = false
-        }
-        return mockLocation.succeeded
-    }
-
-    /**
-     * 在 Root Provider 模式与免 Root 模式之间切换。这里只改变提权配置方式，
-     * 不修改 Android 的 mock 标记或尝试规避目标 App 检测。
-     */
-    fun toggleRootMode(context: Context, enableRoot: Boolean): Boolean {
-        if (!enableRoot) {
-            hasRootAccess = false
-            SimulationLogger.event("root_mode_changed", "mode" to "no_root")
-            return false
-        }
-        val granted = checkRoot()
-        hasRootAccess = granted
-        if (granted) {
-            hasRootAccess = prepareRootEnvironment(context)
-        }
-        val active = hasRootAccess
-        SimulationLogger.event("root_mode_changed", "mode" to if (active) "root" else "no_root")
-        return active
+        return true
     }
 
     /**
@@ -184,11 +158,7 @@ object RootMockManager {
 
         for (provider in createdProviders) {
             val isGps = provider == LocationManager.GPS_PROVIDER
-            val providerAccuracy = if (isGps) {
-                accuracyMeters.toFloat().coerceIn(2.8f, 8f)
-            } else {
-                (accuracyMeters * 4.5 + 8.0).toFloat().coerceIn(15f, 55f)
-            }
+            val providerAccuracy = if (isGps) accuracyMeters.toFloat() else (accuracyMeters * 1.6).toFloat()
 
             val location = Location(provider).apply {
                 this.latitude = latitude
@@ -221,6 +191,11 @@ object RootMockManager {
                 }
             }
 
+            // 3. 在 Root 模式下尝试通过反射清除 Location 对象自身的 Mock 标记位
+            if (hasRootAccess) {
+                tryClearMockFlag(location)
+            }
+
             try {
                 locationManager.setTestProviderLocation(provider, location)
             } catch (e: Throwable) {
@@ -229,9 +204,32 @@ object RootMockManager {
         }
     }
 
+    /**
+     * 尝试通过反射清理 Location 内部的 mIsFromMockProvider 掩码
+     */
+    private fun tryClearMockFlag(location: Location) {
+        try {
+            val setMockMethod = Location::class.java.getDeclaredMethod(
+                "setIsFromMockProvider",
+                Boolean::class.javaPrimitiveType
+            )
+            setMockMethod.isAccessible = true
+            setMockMethod.invoke(location, false)
+        } catch (_: Throwable) {
+            try {
+                val maskField = Location::class.java.getDeclaredField("mFieldsMask")
+                maskField.isAccessible = true
+                val currentMask = maskField.getInt(location)
+                // 清除 IS_FROM_MOCK_PROVIDER_MASK 位
+                maskField.setInt(location, currentMask and (1 shl 4).inv())
+            } catch (_: Throwable) {}
+        }
+    }
+
     fun cleanupProviders(locationManager: LocationManager) {
         for (provider in createdProviders) {
             try {
+                locationManager.setTestProviderEnabled(provider, false)
                 locationManager.removeTestProvider(provider)
             } catch (_: Throwable) {}
         }
@@ -247,7 +245,6 @@ object RootMockManager {
         }
     }
 
-    @SuppressLint("WrongConstant")
     private fun addProvider(
         locationManager: LocationManager,
         provider: String,
@@ -284,13 +281,15 @@ object RootMockManager {
             )
         }
         locationManager.setTestProviderEnabled(provider, true)
-        @Suppress("DEPRECATION")
-        locationManager.setTestProviderStatus(
-            provider,
-            PROVIDER_STATUS_AVAILABLE,
-            null,
-            SystemClock.elapsedRealtime()
-        )
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            @Suppress("DEPRECATION")
+            locationManager.setTestProviderStatus(
+                provider,
+                PROVIDER_STATUS_AVAILABLE,
+                null,
+                System.currentTimeMillis()
+            )
+        }
         createdProviders.add(provider)
     }
 
