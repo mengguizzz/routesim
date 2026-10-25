@@ -4,6 +4,7 @@
     <string name="root_ready">ROOT 已连接</string>
     <string name="root_checking">正在验证 ROOT</string>
     <string name="route_hint">单指画线 · 双指移动/缩放 · 双击放大</string>
+    <string name="screen_always_on_hint">屏幕常亮 · 双指移动/缩放 · 每秒更新定位</string>
     <string name="route_empty">在地图上画一条路线开始</string>
     <string name="mode_running">跑步</string>
     <string name="mode_cycling">骑行</string>

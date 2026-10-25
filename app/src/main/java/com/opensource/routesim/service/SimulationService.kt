@@ -35,6 +35,7 @@ class SimulationService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var locationManager: LocationManager
     private var wakeLock: PowerManager.WakeLock? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
 
     private var running = false
     private var mode = MotionMode.RUNNING
@@ -70,6 +71,7 @@ class SimulationService : Service() {
             SimulationLogger.event("service_destroyed_while_running")
         }
         releaseWakeLock()
+        releaseScreenWakeLock()
         running = false
         isRunning = false
         super.onDestroy()
@@ -139,6 +141,7 @@ class SimulationService : Service() {
         running = true
         isRunning = true
         acquireWakeLock()
+        acquireScreenWakeLock()
         lastTickNanos = SystemClock.elapsedRealtimeNanos()
         broadcastState(
             status = "模拟已启动",
@@ -163,6 +166,8 @@ class SimulationService : Service() {
                 if (tickNumber % WAKE_LOCK_REFRESH_TICKS == 0L) {
                     releaseWakeLock()
                     acquireWakeLock()
+                    releaseScreenWakeLock()
+                    acquireScreenWakeLock()
                 }
 
                 RootMockManager.pushLocationToSystem(
@@ -220,6 +225,7 @@ class SimulationService : Service() {
         running = false
         isRunning = false
         releaseWakeLock()
+        releaseScreenWakeLock()
         config = null
         SimulationLogger.event(
             "service_stop",
@@ -240,6 +246,7 @@ class SimulationService : Service() {
         running = false
         isRunning = false
         releaseWakeLock()
+        releaseScreenWakeLock()
         SimulationLogger.error("service_start_rejected", null, "reason" to message)
         broadcastState(status = message, playing = false, finished = false, error = message)
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -254,6 +261,7 @@ class SimulationService : Service() {
         running = false
         isRunning = false
         releaseWakeLock()
+        releaseScreenWakeLock()
         SimulationLogger.event("service_stopped_after_error", "message" to error.message)
         broadcastState(
             status = "模拟异常：${error.message ?: "未知错误"}",
@@ -400,6 +408,30 @@ class SimulationService : Service() {
             }
         }
         wakeLock = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireScreenWakeLock() {
+        if (screenWakeLock?.isHeld == true) return
+        val powerManager = getSystemService(PowerManager::class.java)
+        screenWakeLock = powerManager.newWakeLock(
+            PowerManager.SCREEN_DIM_WAKE_LOCK,
+            "Routesim:KeepScreenOn",
+        ).apply {
+            setReferenceCounted(false)
+            acquire(WAKE_LOCK_TIMEOUT_MS)
+        }
+        SimulationLogger.event("screen_wake_lock_acquired")
+    }
+
+    private fun releaseScreenWakeLock() {
+        screenWakeLock?.let { lock ->
+            if (lock.isHeld) {
+                lock.release()
+                SimulationLogger.event("screen_wake_lock_released")
+            }
+        }
+        screenWakeLock = null
     }
 
     companion object {

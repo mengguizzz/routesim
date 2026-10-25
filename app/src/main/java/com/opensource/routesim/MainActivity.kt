@@ -190,6 +190,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        binding.root.keepScreenOn = false
         rootExecutor.shutdownNow()
         routePoints.map { LatLng(it.latitude, it.longitude) }
         SimulationLogger.event(
@@ -799,12 +800,16 @@ private fun updateRootStatusBadge(rootActive: Boolean) {
 
     private fun setPlaybackUi(playing: Boolean, status: String) {
         isPlaying = playing
+        if (binding.root.keepScreenOn != playing) {
+            binding.root.keepScreenOn = playing
+            SimulationLogger.event("screen_keep_awake", "enabled" to playing)
+        }
         routeDrawingOverlay.drawingEnabled = !playing
         mapView.setMultiTouchControls(playing)
         mapView.setFlingEnabled(playing)
         binding.tvStatus.text = status
         binding.tvMapHint.text = if (playing) {
-            "双指移动和缩放 · 每秒更新定位"
+            getString(R.string.screen_always_on_hint)
         } else {
             getString(R.string.route_hint)
         }
