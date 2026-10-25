@@ -5,7 +5,7 @@ Routesim 是一个仅面向 Root 设备的路线运动模拟与定位调试工�
 
 项目主页：<https://github.com/mengguizzz/routesim>
 
-<img width="1200" height="2473" alt="qq_pic_merged_1792942720813" src="https://github.com/user-attachments/assets/216f889e-6bb5-4a03-8068-6c83e51b2916" />
+<img width="300" alt="界面" src="https://github.com/user-attachments/assets/216f889e-6bb5-4a03-8068-6c83e51b2916" />
 
 > 本项目仅用于自有设备上的功能测试、路线回放和开发调试。请勿用于考勤、配送考核、
 > 赛事、社交轨迹或其他误导他人的用途。虚拟定位可能违反第三方服务条款并导致账号限制。
